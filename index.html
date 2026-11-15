@@ -5,6 +5,7 @@
 <title>Meetpoint · the fairest place to meet</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23111'/%3E%3Cpath d='M6 8L16 16M26 8L16 16M16 27V16' stroke='%23fff' stroke-width='2' fill='none'/%3E%3Ccircle cx='16' cy='16' r='4' fill='%23fff'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
 /* picture a plain black and white map filling the screen, with one almost see-through pane of frosted glass floating over its left side. there are no rules, borders or underlines anywhere: fields are soft grey pills, buttons are soft pills, and the one important button is solid black. each person has a small numbered dot, and when the answer arrives it appears in the same pane as quiet type. on the map each person is a black numbered dot, their road route is one clean solid line that draws itself in, and the meeting place is a white circle with a star. on a phone the pane sits at the bottom like a sheet. everything is black, white and grey, and flips to white on black in dark mode. motion is small, uses one springy curve, and stops if you ask for reduced motion. the app has one look on purpose: with no colour and no lines on the surface, the map and the routes are all you notice. */
 :root{--bg:#fff;--gl:#ffffffb8;--tx:#111;--mu:#777;--fill:#0000000d;--fill2:#0000001a;--ui:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,system-ui,sans-serif;--e:cubic-bezier(.34,1.4,.64,1)}
@@ -87,8 +88,13 @@ tr{animation:up .5s var(--e) both}
 .sg li span{color:var(--mu);font-size:12px}
 .sg li.on{background:var(--fill2)}
 .sg li.none{color:var(--mu);cursor:default}
+[hidden]{display:none!important}
+#hint{position:absolute;z-index:1200;top:16px;left:50%;transform:translateX(-50%);display:flex;gap:12px;align-items:center;padding:6px 6px 6px 18px;border-radius:999px;background:var(--tx);color:var(--bg);font-weight:500;white-space:nowrap}
+#hint button{min-height:30px;background:#8884;color:inherit}
+@media (max-width:760px){#card.pk{visibility:hidden}}
 </style>
 <div id="map" role="application" aria-label="Map"></div>
+<div id="hint" hidden><span id="ht"></span><button id="hx">Cancel</button></div>
 <section id="card" aria-label="Meetpoint">
 <h1>Meetpoint</h1>
 <div id="pp"></div>
@@ -100,8 +106,10 @@ tr{animation:up .5s var(--e) both}
 
 </section>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script>window.L||document.write('<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"><\/script>')</script>
 <script>
 (function(){
+window.addEventListener('error',function(e){var s=document.getElementById('st');if(s){s.textContent='Something went wrong: '+e.message+'. Refresh the page.';s.className='er'}});
 // helpers and state
 var $=function(id){return document.getElementById(id)},R=Math.PI/180,COL=(function(){var c=window.matchMedia('(prefers-color-scheme: dark)').matches?'#fff':'#111';return [c,c,c,c,c,c,c,c]})(),people=[{n:'',q:'',lat:null,lon:null},{n:'',q:'',lat:null,lon:null}],mode='sum',tmode='car',pick=-1,marks=[],layer=null,spot=null,places=[],cat='All',routes=[],qT=0,deb={},map=null,busy=false,ran=false,pend=false,approx=false,lastQ={},agT=0,SG={},ac={},rAnim=0,reduce=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 var HOSTS={car:['https://routing.openstreetmap.de/routed-car','https://router.project-osrm.org'],bike:['https://routing.openstreetmap.de/routed-bike'],foot:['https://routing.openstreetmap.de/routed-foot']};
@@ -111,23 +119,26 @@ function dst(m){return m<1000?Math.round(m)+' m':(m/1000).toFixed(m<10000?1:0)+'
 function esc(t){return String(t).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function say(t,bad){$('st').textContent=t;$('st').className=bad?'er':''}
 function has(p){return p.lat!==null}
-function get(url,opt){return fetch(url,opt).then(function(r){if(!r.ok)throw new Error(r.status);return r.json()})}
+function get(url,opt,ms){var c=window.AbortController?new AbortController():null,tm,late=false,o=opt||{};if(c&&!o.signal){o=Object.assign({},o,{signal:c.signal});tm=setTimeout(function(){late=true;c.abort()},ms||12000)}return fetch(url,o).then(function(r){clearTimeout(tm);if(!r.ok)throw new Error(r.status);return r.json()},function(e){clearTimeout(tm);throw late?new Error('timed out'):e})}
 // geocoding (one request a second, as the free service asks)
 function nom(url){var w=Math.max(0,qT+1100-Date.now());qT=Date.now()+w;return new Promise(function(r){setTimeout(r,w)}).then(function(){return get(url)})}
 function short(n){return n.split(', ').slice(0,3).join(', ')}
-function setP(i,lat,lon,label,fly){var p=people[i];p.lat=lat;p.lon=lon;p.q=label;var inp=document.querySelector('[data-a="'+i+'"]');if(inp)inp.value=label;draw();save();if(ran)again();if(fly)map.flyTo([lat,lon],Math.max(map.getZoom(),13),{duration:reduce?0:.8})}
-function rev(i,lat,lon){setP(i,lat,lon,lat.toFixed(5)+', '+lon.toFixed(5));
+function setP(i,lat,lon,label,fly){var p=people[i];p.lat=lat;p.lon=lon;p.q=label;var inp=document.querySelector('[data-a="'+i+'"]');if(inp)inp.value=label;draw();save();if(ran)again();if(fly)fitPins()}
+function rev(i,lat,lon,fit){setP(i,lat,lon,lat.toFixed(5)+', '+lon.toFixed(5),fit);
 get('https://photon.komoot.io/reverse?lon='+lon+'&lat='+lat+'&lang=en').then(function(j){var f=(j.features||[])[0];if(!f)throw 0;var r=pf(f);if(people[i]&&people[i].lat===lat)setP(i,lat,lon,r.label)}).catch(function(){nom('https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&lat='+lat+'&lon='+lon).then(function(j){if(j&&j.display_name&&people[i]&&people[i].lat===lat)setP(i,lat,lon,short(j.display_name))},function(){})})}
 function locate(){var i=0;people.some(function(q,k){if(!has(q)){i=k;return true}});
 if(window.isSecureContext===false){say('Location only works on a secure (https) page. Open the GitHub Pages link, not the file on your computer.',1);return}
 if(!navigator.geolocation){say('This browser cannot share a location. Type an address instead.',1);return}
 say('Allow location access when your browser asks…');
-navigator.geolocation.getCurrentPosition(function(p){say('');rev(i,p.coords.latitude,p.coords.longitude);map.flyTo([p.coords.latitude,p.coords.longitude],15,{duration:reduce?0:1})},function(e){say(e.code===1?'Location is blocked for this site. Click the lock icon next to the web address, set Location to Allow, then try again.':e.code===3?'Finding your location took too long. Try again, or type an address.':'Your device could not find its location. Type an address instead.',1)},{enableHighAccuracy:true,timeout:12000,maximumAge:60000})}
+navigator.geolocation.getCurrentPosition(function(p){say('');rev(i,p.coords.latitude,p.coords.longitude,1)},function(e){say(e.code===1?'Location is blocked for this site. Click the lock icon next to the web address, set Location to Allow, then try again.':e.code===3?'Finding your location took too long. Try again, or type an address.':'Your device could not find its location. Type an address instead.',1)},{enableHighAccuracy:true,timeout:12000,maximumAge:60000})}
+function fitPins(){if(!map)return;var pts=people.filter(has);if(!pts.length)return;var wide=window.innerWidth>760,o={paddingTopLeft:[wide?420:30,70],paddingBottomRight:[30,wide?70:Math.round(window.innerHeight*.6)],maxZoom:15,animate:!reduce,duration:1};try{map.flyToBounds(L.latLngBounds(pts.map(function(q){return [q.lat,q.lon]})),o)}catch(e){}}
+function startPick(i){pick=i;$('map').classList.add('pick');$('ht').textContent='Click the map to place person '+(i+1);$('hint').hidden=false;if(window.innerWidth<=760)$('card').classList.add('pk')}
+function endPick(){pick=-1;$('map').classList.remove('pick');$('hint').hidden=true;$('card').classList.remove('pk')}
 function again(){clearTimeout(agT);agT=setTimeout(function(){if(people.filter(has).length>1)find()},900)}
 function search(i,q){q=q.trim();if(q.length<3)return;nom('https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&q='+encodeURIComponent(q)).then(function(a){if(q!==people[i].q)return;SG[i]={items:a.map(function(r){var ps=r.display_name.split(', ');return {main:ps[0],sub:ps.slice(1,4).join(', '),label:short(r.display_name),lat:+r.lat,lon:+r.lon}}),idx:-1};renderSg(i)},function(e){if(q!==people[i].q)return;SG[i]={items:[],idx:-1,err:(e&&e.message)||'offline'};renderSg(i)})}
 // live address suggestions (photon, built for search as you type)
 function pf(f){var p=f.properties||{},st=((p.housenumber?p.housenumber+' ':'')+(p.street||'')).trim(),main=p.name||st||p.city||p.state||p.country||'Place',near=p.city||p.town||p.village||p.state||p.country,loc=[p.name&&st?st:'',p.district,p.city||p.town||p.village,p.state,p.country].filter(function(x,k,a){return x&&x!==main&&a.indexOf(x)===k}),c=f.geometry.coordinates;return {main:main,sub:loc.join(', '),label:main+(near&&near!==main?', '+near:''),lat:c[1],lon:c[0]}}
-function photon(q,n,sig){var c=map.getCenter();return get('https://photon.komoot.io/api/?q='+encodeURIComponent(q)+'&limit='+n+'&lang=en&lat='+c.lat.toFixed(3)+'&lon='+c.lng.toFixed(3),sig?{signal:sig}:undefined).then(function(j){return (j.features||[]).map(pf)})}
+function photon(q,n,sig){var c=map?map.getCenter():{lat:0,lng:0};return get('https://photon.komoot.io/api/?q='+encodeURIComponent(q)+'&limit='+n+'&lang=en&lat='+c.lat.toFixed(3)+'&lon='+c.lng.toFixed(3),sig?{signal:sig}:undefined).then(function(j){return (j.features||[]).map(pf)})}
 function closeSg(i){SG[i]={items:[],idx:-1};var ul=$('sg'+i);if(ul)ul.innerHTML=''}
 function renderSg(i){var ul=$('sg'+i),s=SG[i];if(!ul||!s)return;ul.innerHTML=s.wait?'<li class="none">Searching…</li>':s.err?'<li class="none">Suggestions are unavailable ('+esc(s.err)+'). Check your connection, then press Enter to try again.</li>':s.items.length?s.items.map(function(r,k){return '<li role="option" tabindex="-1" data-k="'+k+'" class="'+(k===s.idx?'on':'')+'"><b>'+esc(r.main)+'</b><span>'+esc(r.sub)+'</span></li>'}).join(''):'<li class="none">No matches. Try adding the city.</li>';ul.onclick=function(e){var li=e.target.closest('li[data-k]');if(li)pickSg(i,+li.dataset.k)}}
 function pickSg(i,k){var r=SG[i]&&SG[i].items[k];if(!r)return;closeSg(i);setP(i,r.lat,r.lon,r.label,1)}
@@ -138,7 +149,7 @@ photon(q,5,c&&c.signal).then(function(r){clearTimeout(tm);if(q!==people[i].q)ret
 // people list and pins
 function rows(){var pin='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 22s7-6.2 7-12a7 7 0 1 0-14 0c0 5.8 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/></svg>';
 $('pp').innerHTML=people.map(function(p,i){return '<div class="pr" style="animation-delay:'+i*40+'ms"><i>'+(i+1)+'</i><div class="f"><input data-a="'+i+'" value="'+esc(p.q)+'" placeholder="Start typing an address" aria-autocomplete="list" aria-label="Location of person '+(i+1)+'" autocomplete="off"></div><div class="sm"><button class="ic" data-pin="'+i+'" aria-label="Drop a pin for person '+(i+1)+'" title="Drop a pin on the map">'+pin+'</button>'+(people.length>2?'<button class="ic rm" data-rm="'+i+'" aria-label="Remove person '+(i+1)+'">×</button>':'')+'</div><ul class="sg" id="sg'+i+'"></ul></div>'}).join('');$('addb').disabled=people.length>=8}
-function draw(){marks.forEach(function(m){map.removeLayer(m)});marks=[];people.forEach(function(p,i){if(!has(p))return;var m=L.marker([p.lat,p.lon],{draggable:true,icon:L.divIcon({className:'',html:'<div class="mk">'+(i+1)+'</div>',iconSize:[28,28],iconAnchor:[14,14]}),title:'Person '+(i+1)}).addTo(map);m.on('dragend',function(){var l=m.getLatLng();rev(i,l.lat,l.lng)});marks.push(m)})}
+function draw(){if(!map)return;marks.forEach(function(m){map.removeLayer(m)});marks=[];people.forEach(function(p,i){if(!has(p))return;var m=L.marker([p.lat,p.lon],{draggable:true,icon:L.divIcon({className:'',html:'<div class="mk">'+(i+1)+'</div>',iconSize:[28,28],iconAnchor:[14,14]}),title:'Person '+(i+1)}).addTo(map);m.on('dragend',function(){var l=m.getLatLng();rev(i,l.lat,l.lng)});marks.push(m)})}
 function save(){try{localStorage.setItem('meetpoint-v2',JSON.stringify(people))}catch(e){}}
 // finding the spot
 function mid(pts){var c={lat:0,lon:0};pts.forEach(function(p){c.lat+=p.lat/pts.length;c.lon+=p.lon/pts.length});for(var i=0;i<40;i++){var x=0,y=0,w=0;pts.forEach(function(p){var k=1/Math.max(hav(c,p),.01);x+=p.lat*k;y+=p.lon*k;w+=k});c={lat:x/w,lon:y/w}}return c}
@@ -153,7 +164,7 @@ Promise.all(todo.map(function(i){return photon(people[i].q,1).then(function(r){i
 function run(){if(busy){pend=true;return}var pts=people.filter(has);if(pts.length<2){say('Place at least two people first. Search an address or drop a pin.',1);return}
 busy=true;approx=false;$('go').disabled=true;$('go').classList.add('busy');$('go').textContent='Finding…';var c0=mid(pts),far=Math.max.apply(null,pts.map(function(p){return hav(c0,p)})),r1=Math.max(.5,far*.8);say('Checking roads between everyone…');
 var c1=grid(c0,r1);table(pts,c1).then(function(D){var i=best(D,c1.length);if(i<0)throw new Error('NoRoute');var b=c1[i],c2=grid(b,r1/4);say('Narrowing it down…');return table(pts,c2).then(function(D2){var k=best(D2,c2.length);return k<0?b:c2[k]})}).then(function(b){say('Looking for places nearby…');return nearby(b).then(function(pl){places=pl;spot=null;var first=pl.filter(function(x){return x.c==='Coffee'||x.c==='Food'})[0]||pl[0];if(first)return choose(first);return nom('https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=17&lat='+b.lat+'&lon='+b.lon).then(function(j){return choose({n:j&&j.name?j.name:short(j.display_name||'Meeting point'),lat:b.lat,lon:b.lon,c:'Point'})},function(){return choose({n:'Meeting point',lat:b.lat,lon:b.lon,c:'Point'})})})}).catch(function(e){say(e.message==='NoRoute'?'No road connects everyone for this travel mode. Try another mode, or move a pin onto the same landmass.':'Routing failed ('+(e&&e.message||'no connection')+'). Wait a moment and try again.',1);console.error(e)}).then(function(){busy=false;$('go').disabled=false;$('go').classList.remove('busy');$('go').textContent='Find the best place';if(pend){pend=false;find()}})}
-function ov(q){var u=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter'];function f(k){return get(u[k],{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(q)}).catch(function(e){if(k+1<u.length)return f(k+1);throw e})}return f(0)}
+function ov(q){var u=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter'];function f(k){return get(u[k],{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(q)},25000).catch(function(e){if(k+1<u.length)return f(k+1);throw e})}return f(0)}
 function nearby(b){var q='[out:json][timeout:20];(node(around:1500,'+b.lat+','+b.lon+')[amenity~"^(cafe|restaurant|fast_food|pub|bar)$"][name];node(around:1500,'+b.lat+','+b.lon+')[leisure=park][name];way(around:1500,'+b.lat+','+b.lon+')[leisure=park][name];);out center 80;';
 return ov(q).then(function(j){return j.elements.map(function(e){var t=e.tags,a=t.amenity;return {n:t.name,lat:e.lat||e.center.lat,lon:e.lon||e.center.lon,c:t.leisure?'Parks':a==='cafe'?'Coffee':(a==='pub'||a==='bar')?'Drinks':'Food',a:[t['addr:housenumber'],t['addr:street']].filter(Boolean).join(' ')}}).map(function(p){p.d=hav(b,p);return p}).sort(function(x,y){return x.d-y.d}).slice(0,40)},function(){return []})}
 function choose(p){spot=p;var pts=people.map(function(q,i){return has(q)?i:-1}).filter(function(i){return i>=0});return Promise.all(pts.map(function(i){var q=people[i];return route('/route/v1/driving/'+q.lon+','+q.lat+';'+p.lon+','+p.lat+'?overview=full&geometries=geojson').then(function(j){var r=j.routes[0];return {i:i,t:r.duration,d:r.distance,g:r.geometry.coordinates.map(function(x){return [x[1],x[0]]})}},function(){approx=true;var sp={car:60,bike:15,foot:5}[tmode],h=hav(q,p);return {i:i,t:h*1.3/sp*3600,d:h*1300,g:[[q.lat,q.lon],[p.lat,p.lon]]}})})).then(function(rs){routes=rs;ran=true;say(approx?'Road routing is busy, so these are straight-line estimates.':'');show()})}
@@ -168,7 +179,7 @@ $('cp').onclick=function(){var t='Meet at '+spot.n+'\n'+routes.map(function(r){r
 function count(a,b){var t0=performance.now();(function f(n){if(!$('tt'))return;var k=reduce?1:Math.min(1,(n-t0)/1100),e=1-Math.pow(1-k,3);$('tt').textContent=dur(a*e);$('tl').textContent=dur(b*e);if(k<1)requestAnimationFrame(f)})(t0)}
 function placeList(){return places.filter(function(p){return p!==spot}).slice(0,6).map(function(p){return '<button data-pl="'+places.indexOf(p)+'">'+esc(p.n)+'</button>'}).join('')}
 function land(){L.marker([spot.lat,spot.lon],{icon:L.divIcon({className:'',html:'<div class="mk sp">★</div>',iconSize:[40,40],iconAnchor:[20,20]}),title:spot.n}).addTo(layer)}
-function mapRoutes(){cancelAnimationFrame(rAnim);if(layer)map.removeLayer(layer);layer=L.layerGroup().addTo(map);var all=[],started=false,wide=window.innerWidth>760;routes.forEach(function(r){all=all.concat(r.g)});all.push([spot.lat,spot.lon]);
+function mapRoutes(){if(!map)return;cancelAnimationFrame(rAnim);if(layer)map.removeLayer(layer);layer=L.layerGroup().addTo(map);var all=[],started=false,wide=window.innerWidth>760;routes.forEach(function(r){all=all.concat(r.g)});all.push([spot.lat,spot.lon]);
 function start(){if(started)return;started=true;var els=[],bg=getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
 routes.forEach(function(r,k){var pl=L.polyline(r.g,{color:COL[r.i],weight:4,opacity:1,lineCap:'round',lineJoin:'round',smoothFactor:1.2}).addTo(layer),el=pl.getElement();if(!el||!el.getTotalLength||reduce)return;var n=el.getTotalLength(),hd=document.createElementNS('http://www.w3.org/2000/svg','circle');hd.setAttribute('r',6);hd.setAttribute('fill',bg);hd.setAttribute('stroke',COL[r.i]);hd.setAttribute('stroke-width',3);hd.style.opacity=0;el.parentNode.appendChild(hd);el.style.strokeDasharray=n;el.style.strokeDashoffset=n;els.push({el:el,n:n,hd:hd,k:k,d:Math.min(2400,Math.max(1100,900+n*1.2))})});
 if(!els.length){land();return}
@@ -178,29 +189,35 @@ var o={paddingTopLeft:[wide?420:30,40],paddingBottomRight:[30,wide?40:Math.round
 if(reduce){map.fitBounds(b,o);start();return}
 map.flyToBounds(b,o);map.once('moveend',function(){setTimeout(start,150)});setTimeout(start,1900)}
 // event wiring
-if(typeof L==='undefined'){say('The map did not load. Check your connection and refresh.',1);return}
-map=L.map('map',{zoomControl:false}).setView([30,10],2);L.control.zoom({position:'bottomright'}).addTo(map);
-var errs=0,osm=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap contributors'}).addTo(map),alt=L.tileLayer('https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png',{maxZoom:19,subdomains:'abc',attribution:'© OpenStreetMap contributors, tiles by OSM France'});
-osm.on('tileerror',function(){if(++errs===6){map.removeLayer(osm);alt.addTo(map)}});
-try{var o=JSON.parse(localStorage.getItem('meetpoint-v2')||'null');if(o&&o.length>=2)people=o}catch(e){}
-rows();draw();var pts0=people.filter(has);if(pts0.length)map.fitBounds(L.latLngBounds(pts0.map(function(p){return [p.lat,p.lon]})),{paddingTopLeft:[420,60],maxZoom:12});
-try{if(navigator.permissions&&!people.some(has))navigator.permissions.query({name:'geolocation'}).then(function(s){if(s.state==='granted')navigator.geolocation.getCurrentPosition(function(p){map.setView([p.coords.latitude,p.coords.longitude],12)},function(){})},function(){})}catch(e){}
-map.on('click',function(e){if(pick<0)return;var i=pick;pick=-1;$('map').classList.remove('pick');say('');rev(i,e.latlng.lat,e.latlng.lng)});
+try{var o=JSON.parse(localStorage.getItem('meetpoint-v2')||'null');if(Array.isArray(o)&&o.length>=2)people=o.slice(0,8).map(function(q){var ok=q&&q.lat!==null&&q.lat!==undefined&&isFinite(q.lat)&&isFinite(q.lon);return {n:'',q:String(q&&q.q||''),lat:ok?+q.lat:null,lon:ok?+q.lon:null}})}catch(e){}
+rows();
 $('pp').oninput=function(e){var t=e.target;if(t.dataset.a===undefined)return;var i=+t.dataset.a,p=people[i];p.q=t.value;if(has(p)){p.lat=null;p.lon=null;draw()}suggest(i,t.value);save()};
 $('pp').onkeydown=function(e){var t=e.target;if(t.dataset.a===undefined)return;var i=+t.dataset.a,s=SG[i]||{items:[],idx:-1};
 if(e.key==='ArrowDown'||e.key==='ArrowUp'){if(!s.items.length)return;e.preventDefault();s.idx=(s.idx+(e.key==='ArrowDown'?1:-1)+s.items.length)%s.items.length;SG[i]=s;renderSg(i)}
 else if(e.key==='Enter'){e.preventDefault();if(s.items.length)pickSg(i,s.idx<0?0:s.idx);else photon(t.value,1).then(function(r){if(r[0])setP(i,r[0].lat,r[0].lon,r[0].label,1);else say('No place found for "'+t.value+'". Add the city, or drop a pin instead.',1)},function(){search(i,t.value)})}
 else if(e.key==='Escape')closeSg(i)};
 document.addEventListener('click',function(e){if(!e.target.closest('.pr'))people.forEach(function(q,i){closeSg(i)})});
-$('pp').onclick=function(e){var bt=e.target.closest('button'),d=bt?bt.dataset:{};if(d.pin!==undefined){pick=+d.pin;$('map').classList.add('pick');say('Click the map to place '+(people[pick].n||'person '+(pick+1))+'.')}
-if(d.me!==undefined){var i=+d.me;say('Finding your location…');navigator.geolocation?navigator.geolocation.getCurrentPosition(function(p){say('');rev(i,p.coords.latitude,p.coords.longitude);map.flyTo([p.coords.latitude,p.coords.longitude],14)},function(){say('Location is blocked. Allow it in your browser, or search an address instead.',1)}):say('This browser cannot share a location. Search an address instead.',1)}
+$('pp').onclick=function(e){var bt=e.target.closest('button'),d=bt?bt.dataset:{};if(d.pin!==undefined){startPick(+d.pin)}
+if(d.me!==undefined){var i=+d.me;say('Finding your location…');navigator.geolocation?navigator.geolocation.getCurrentPosition(function(p){say('');rev(i,p.coords.latitude,p.coords.longitude);if(map)map.flyTo([p.coords.latitude,p.coords.longitude],14)},function(){say('Location is blocked. Allow it in your browser, or search an address instead.',1)}):say('This browser cannot share a location. Search an address instead.',1)}
 if(d.rm!==undefined){people.splice(+d.rm,1);rows();draw();save();if(ran)again()}};
 $('addb').onclick=function(){people.push({n:'',q:'',lat:null,lon:null});rows();save()};
 $('go').onclick=find;
+$('hx').onclick=endPick;
+document.addEventListener('keydown',function(e){if(e.key==='Escape'&&pick>=0)endPick()});
 $('fair').onclick=function(){mode=mode==='sum'?'max':'sum';this.setAttribute('aria-pressed',mode==='max');if(ran)again()};
 $('me').onclick=locate;
 document.querySelectorAll('[data-t]').forEach(function(b){b.onclick=function(){tmode=b.dataset.t;document.querySelectorAll('[data-t]').forEach(function(x){x.setAttribute('aria-pressed',x===b)});if(ran)again()}});
 document.querySelectorAll('[data-m]').forEach(function(b){b.onclick=function(){mode=b.dataset.m;document.querySelectorAll('[data-m]').forEach(function(x){x.setAttribute('aria-pressed',x===b)});if(ran)again()}});
 $('res').onclick=function(e){var d=e.target.dataset;if(d.c){cat=d.c;show()}if(d.pl!==undefined&&!busy){busy=true;say('Updating routes…');choose(places[+d.pl]).catch(function(){say('Could not route to that place. Try another.',1)}).then(function(){busy=false})}};
+// start the map last, so the buttons always work
+try{if(typeof L==='undefined')throw new Error('the map library did not load');
+map=L.map('map',{zoomControl:false}).setView([30,10],2);L.control.zoom({position:'bottomright'}).addTo(map);
+var errs=0,osm=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap contributors'}).addTo(map),alt=L.tileLayer('https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png',{maxZoom:19,subdomains:'abc',attribution:'© OpenStreetMap contributors, tiles by OSM France'});
+osm.on('tileerror',function(){if(++errs===6){map.removeLayer(osm);alt.addTo(map)}});
+draw();var pts0=people.filter(has);try{if(pts0.length)map.fitBounds(L.latLngBounds(pts0.map(function(p){return [p.lat,p.lon]})),{paddingTopLeft:[window.innerWidth>760?420:30,60],maxZoom:12})}catch(e){}
+try{if(navigator.permissions&&!people.some(has))navigator.permissions.query({name:'geolocation'}).then(function(s){if(s.state==='granted')navigator.geolocation.getCurrentPosition(function(p){map.setView([p.coords.latitude,p.coords.longitude],12)},function(){})},function(){})}catch(e){}
+map.on('click',function(e){if(pick<0)return;var i=pick;endPick();say('');rev(i,e.latlng.lat,e.latlng.lng,1)});
+window.addEventListener('resize',function(){if(map)map.invalidateSize()});
+}catch(e){map=null;say('The map could not start ('+e.message+'). Refresh, or check that cdnjs.cloudflare.com is not blocked.',1)}
 })();
 </script>
